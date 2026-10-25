@@ -1,0 +1,4 @@
+- insert:
+    - id: sidebar-pomodoro
+      name: '@local/sidebar-pomodoro'
+      config: {}

@@ -1,0 +1,24 @@
+{
+  "name": "@local/sidebar-clock",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Adds a clock button to the sidebar foot that opens a full-page clock. · 在侧栏底部加一个时钟按钮，点击打开独立的时钟页面。",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": ["index.js", "client.js", "cordis.patch.yml", "locale/*.json", "icon.svg"],
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": ["@deepseek-ai/dsh-client-locale"]
+    }
+  }
+}

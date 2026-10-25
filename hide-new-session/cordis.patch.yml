@@ -1,0 +1,4 @@
+- insert:
+    - id: hide-new-session
+      name: '@local/hide-new-session'
+      config: {}

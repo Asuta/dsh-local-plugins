@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Sidebar Pomodoro",
+    "description": "Adds a Pomodoro button above the clock in the sidebar foot; it opens a focus-timer page with automatic focus, short-break and long-break rounds."
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Sidebar Clock",
+    "description": "Adds a clock button above Settings in the sidebar foot; it opens a full-page clock with an analog face and the current time."
+  }
+}

@@ -1,0 +1,12 @@
+# 本机 agent 笔记，不属于插件代码
+/AGENTS.md
+
+# 依赖与构建产物
+node_modules/
+.pnpm-store/
+dist/
+
+# 日志与系统垃圾
+*.log
+.DS_Store
+Thumbs.db
