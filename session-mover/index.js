@@ -1,7 +1,7 @@
 /**
  * Session mover (Host half).
  *
- * Moves one closed Session into another Workspace the way the app itself
+ * Moves one idle Session into another Workspace the way the app itself
  * would: the log folder travels to the target Workspace's folder, the log
  * header's `cwd` is rewritten to that folder's path, and the Workspace entity's
  * own `attachSession` / `detachSession` (validated against the header) does the
@@ -16,7 +16,7 @@
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { createMover } from './mover.js?v=0.2.1-final'
+import { createMover } from './mover.js?v=0.3.0'
 
 const PREFIX = '/__session-mover'
 const HEADER = 'x-session-mover'
@@ -188,12 +188,14 @@ export function apply(ctx) {
   ctx.effect(() => ctx.get('tools')?.register({
     name: 'session_move',
     deferLoading: true,
-    description: 'List workspace identifiers or move an idle conversation to another workspace, changing its working directory. Loaded conversations are safely reopened with their pending input preserved. Running conversations must be stopped first.',
+    description: 'List workspace identifiers or move an idle conversation to another workspace, changing its working directory. Loaded conversations are safely reopened with their pending input preserved. Running conversations must be stopped first. Header drops lead their pin partition; optional position inserts before or after a same-partition conversation. Successful moves return an undo token.',
     parameters: {
       type: 'object', properties: {
         action: { type: 'string', enum: ['list', 'move'] },
         sessionId: { type: 'string', description: 'Conversation id for move.' },
-        workspaceId: { type: 'string', description: 'Target workspace id for move; obtain it with list.' },
+        workspaceId: { type: 'string', description: 'Target workspace id for move; obtain it with list. Omit when using undoToken.' },
+        position: { type: 'object', description: 'Omit for first in the same pin partition. Use edge end without an anchor to append. Other edges require anchorSessionId. Opposite-partition anchors resolve to partition head.', properties: { anchorSessionId: { type: 'string' }, edge: { type: 'string', enum: ['before', 'after', 'end'] } }, required: ['edge'], additionalProperties: false },
+        undoToken: { type: 'string', description: 'Token from a successful move to restore that conversation to its previous workspace and order; use with its sessionId.' },
       }, required: ['action'], additionalProperties: false,
     },
     output: {
@@ -263,6 +265,7 @@ export function apply(ctx) {
       if (!registry) return send(res, 200, { ok: false, error: 'workspaceRegistry unavailable' })
       send(res, 200, {
         ok: true,
+        pinnedSessionIds: [...registry.pinnedSessionIds],
         workspaces: registry.list().map((workspace) => ({
           id: workspace.id,
           title: workspace.title,

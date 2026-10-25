@@ -1,6 +1,8 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { AsyncLocalStorage } from 'node:async_hooks'
+import { randomUUID } from 'node:crypto'
+import { placementBefore, captureOrder, restoreBefore } from './placement.js?v=0.3.0'
 
 const ORIGINAL = Symbol.for('cordis.original')
 const EFFECT = Symbol.for('cordis.effect')
@@ -12,6 +14,7 @@ const message = error => error instanceof Error ? error.message : String(error)
 export function createMover(ctx, io) {
   const moving = new Map()
   const active = new Map()
+  const undoMoves = new Map()
   const owner = new AsyncLocalStorage()
   const agents = ctx.get('agents')
   const sessions = ctx.get('sessions')
@@ -174,15 +177,25 @@ export function createMover(ctx, io) {
     }
   }
 
-  async function transaction(id, workspaceId) {
+  async function transaction(id, workspaceId, position, undoRecord) {
     let source, target, located, destination, backup, indexBackup, originalCwd
     let wasLive = false, unloaded = false, touched = false, inbox = null
+    let originalOrder, pinned, sourceId
     try {
       target = registry.get(workspaceId)
       if (!target) throw fail('UNKNOWN_WORKSPACE', 'Unknown target workspace')
       source = registry.list().find(workspace => workspace.sessionIds.includes(id))
       if (!source) throw fail('UNACCOUNTED', 'This conversation has no source workspace')
       if (source.id === target.id) return { ok: true, unchanged: true, sessionId: id }
+      const initial = await io.readWorkspaces()
+      if (!Array.isArray(initial?.global?.pinnedSessionIds)) throw fail('UNSUPPORTED', 'Pin metadata is unavailable')
+      if (initial.global.archivedSessionIds?.includes(id)) throw fail('ARCHIVED', 'Unarchive this conversation before moving it')
+      pinned = initial.global.pinnedSessionIds.includes(id)
+      originalOrder = captureOrder([...source.sessionIds], id)
+      sourceId = source.id
+      if (undoRecord && (source.id !== undoRecord.targetId || pinned !== undoRecord.pinned)) throw fail('STALE_UNDO', 'The conversation moved or its pin state changed after this action')
+      // Validate anchor before saving or unloading; opposite pin regions intentionally mean partition head.
+      if (!undoRecord) placementBefore([...target.sessionIds], initial.global.pinnedSessionIds, id, position)
       const targetPath = await fs.realpath(target.path)
       const targetFolder = io.folderNameFor(targetPath)
       destination = path.join(io.sessionsRoot(), targetFolder, id)
@@ -219,6 +232,14 @@ export function createMover(ctx, io) {
       io.evictHeaderIndex(registry, id)
       await target.attachSession(id)
       await source.detachSession(id)
+      const current = await io.readWorkspaces()
+      if (current.global.pinnedSessionIds.includes(id) !== pinned) throw fail('PIN_CHANGED', 'Pin state changed during the move; retry')
+      const beforeId = undoRecord
+        ? restoreBefore([...target.sessionIds], id, undoRecord.originalOrder)
+        : placementBefore([...target.sessionIds], current.global.pinnedSessionIds, id, position)
+      await target.insertSessionBefore(id, beforeId)
+      const applied = [...target.sessionIds]
+      if (applied.indexOf(id) + 1 !== (beforeId === undefined ? applied.length : applied.indexOf(beforeId))) throw fail('ORDER_MISMATCH', 'Target order could not be confirmed')
       const accounted = io.holders(await io.readWorkspaces(), id)
       if (accounted.length !== 1 || accounted[0].workspaceId !== target.id) throw fail('INDEX_MISMATCH', 'Workspace membership did not settle')
       if (wasLive) await reopen(id, targetPath, inbox)
@@ -227,8 +248,16 @@ export function createMover(ctx, io) {
         const summary = (await controller.list({}, new AbortController().signal)).items.find(row => row.sessionId === id)
         if (summary) ctx.emit('api-session/added', summary)
       } catch (error) { ctx.logger.warn(`session-mover: summary refresh: ${message(error)}`) }
+      let undoToken
+      if (!undoRecord) {
+        for (const [key, value] of undoMoves) if (value.expires < Date.now()) undoMoves.delete(key)
+        if (undoMoves.size >= 100) undoMoves.delete(undoMoves.keys().next().value)
+        undoToken = randomUUID()
+        undoMoves.set(undoToken, { id, sourceId, targetId: target.id, originalOrder, pinned, expires: Date.now() + 30 * 60 * 1000 })
+      }
       return {
-        ok: true, sessionId: id, reopened: wasLive, queuePreserved: true,
+        ok: true, sessionId: id, reopened: wasLive, queuePreserved: true, pinned, undoToken,
+        placement: { beforeSessionId: beforeId ?? null },
         source: { id: source.id, title: source.title },
         target: { id: target.id, title: target.title },
         cwd: targetPath, backup, indexBackup,
@@ -250,6 +279,7 @@ export function createMover(ctx, io) {
           await source.detachSession(id)
           io.evictHeaderIndex(registry, id)
           await source.attachSession(id)
+          await source.insertSessionBefore(id, restoreBefore([...source.sessionIds], id, originalOrder))
           const accounted = io.holders(await io.readWorkspaces(), id)
           if (accounted.length !== 1 || accounted[0].workspaceId !== source.id) throw fail('RESTORE_INDEX', 'Original workspace membership could not be restored')
           rolledBack = true
@@ -262,7 +292,14 @@ export function createMover(ctx, io) {
     }
   }
 
-  async function move({ sessionId: id, workspaceId }) {
+  async function move({ sessionId: id, workspaceId, position, undoToken } = {}) {
+    const undoRecord = undoToken === undefined ? undefined : undoMoves.get(undoToken)
+    if (undoToken !== undefined) {
+      if (!undoRecord || undoRecord.id !== id || undoRecord.expires < Date.now()) return { ok: false, code: 'STALE_UNDO', error: 'This undo expired or belongs to another conversation' }
+      workspaceId = undoRecord.sourceId
+      position = undefined
+    }
+    if (position !== undefined && (!position || typeof position !== 'object' || (position.edge === 'end' ? position.anchorSessionId !== undefined : (!/^session-[0-9a-f-]{36}$/i.test(position.anchorSessionId ?? '') || !['before', 'after'].includes(position.edge) || position.anchorSessionId === id)))) return { ok: false, code: 'BAD_REQUEST', error: 'Position requires another conversation and edge before or after' }
     if (!/^session-[0-9a-f-]{36}$/i.test(id ?? '') || typeof workspaceId !== 'string' || !workspaceId) return { ok: false, code: 'BAD_REQUEST', error: 'Valid sessionId and workspaceId are required' }
     if (stopping || !supported) return { ok: false, code: 'UNSUPPORTED', error: 'This DSH version does not support the lifecycle adapter' }
     if (moving.size) return { ok: false, code: 'MOVE_IN_PROGRESS', error: 'Another conversation is being moved; retry when it finishes' }
@@ -270,7 +307,11 @@ export function createMover(ctx, io) {
     let release
     const entry = { done: new Promise(resolve => { release = resolve }) }
     moving.set(id, entry)
-    try { return await owner.run(entry, () => transaction(id, workspaceId)) }
+    try {
+      const result = await owner.run(entry, () => transaction(id, workspaceId, position, undoRecord))
+      if (result.ok && undoToken) undoMoves.delete(undoToken)
+      return result
+    }
     finally { moving.delete(id); release() }
   }
 

@@ -31,6 +31,9 @@ window.__ModuleLoader__.load({
       restoreFailed: 'Automatic recovery failed. The conversation backup has been kept.',
       notAllowed: 'this DSH build refuses the move',
       busy: 'Moving…',
+      orderUnavailable: 'Native sidebar ordering is unavailable. No conversation was moved.',
+      stalePosition: 'The target position changed. Please drop again.',
+      orderFailed: 'The conversation moved, but its display order needs retrying. Use Undo to restore it.',
     }
     const zh = {
       label: '移动到工作区',
@@ -44,6 +47,9 @@ window.__ModuleLoader__.load({
       restoreFailed: '自动恢复未完成，已保留对话备份，请检查后再操作',
       notAllowed: '这个 DSH 版本拒绝了这次移动',
       busy: '正在移动…',
+      orderUnavailable: '侧栏排序接口暂不可用，未移动对话',
+      stalePosition: '目标位置已变化，请重新拖放',
+      orderFailed: '对话已移动，但显示排序未完成，可撤销恢复',
     }
 
     const PREFIX = '/__session-mover'
@@ -120,18 +126,157 @@ window.__ModuleLoader__.load({
       return null
     }
 
-    /** Where a drop would land: a Workspace row, or the Workspace owning a Session row. */
-    function dropTarget(element) {
+    // The native sidebar owns a single persistent store. Do not recreate it or edit localStorage.
+    function nativeOrderContext() {
+      const scopedUi = clientContext?.get('uiWorkspace')
+      const ui = scopedUi?.[Symbol.for('cordis.original')] ?? scopedUi
+      const workspaces = clientContext?.get('workspaces')?.list.getSnapshot()
+      const list = clientContext?.get('sessions')?.list.getSnapshot()
+      const entries = clientContext?.slots.entries('sidebar.workspaces') ?? []
+      const candidate = entries.find(entry => entry.store?.spec?.persist === 'dsh.workspace.view.v5' && typeof entry.store.create === 'function')
+      const store = candidate?.store.create()
+      if (!store?.getSnapshot || !store?.actions?.setSessionOrder || !store?.actions?.setOrderBy || store.actions !== ui?.view || !workspaces || workspaces.phase !== 'ready' || !list || list.phase !== 'ready') throw new Error('ORDER_UNAVAILABLE')
+      const view = store.getSnapshot()
+      if (!['manual', 'updated'].includes(view.orderBy)) throw new Error('ORDER_UNAVAILABLE')
+      const orders = accountOrders(workspaces, list, view)
+      return { store, workspaces, list, view, orders, pins: new Set(workspaces.pinnedSessionIds), archived: new Set(workspaces.archivedSessionIds) }
+    }
+
+    function recentOrder(ids, summaries) {
+      return ids.filter(id => summaries[id]).sort((a, b) => {
+        const x = summaries[a].updatedAt, y = summaries[b].updatedAt
+        return x === y ? (a < b ? -1 : a === b ? 0 : 1) : x > y ? -1 : 1
+      })
+    }
+
+    // Mirror native reconciliation including hidden overflow members, new pins and forks.
+    function manualOrder(ids, saved, summaries, rowState) {
+      const members = new Set(ids), included = new Set(), ordered = []
+      for (const id of saved ?? []) if (members.has(id) && !included.has(id)) { ordered.push(id); included.add(id) }
+      const archived = new Set(rowState.archivedSessionIds), pins = []
+      for (const id of rowState.pinnedSessionIds) if (members.has(id) && !included.has(id) && !archived.has(id) && summaries[id]) { pins.push(id); included.add(id) }
+      const ordinary = [], archives = []
+      for (const id of recentOrder(ids.filter(id => !included.has(id)), summaries)) (archived.has(id) ? archives : ordinary).push(id)
+      const result = [...pins, ...ordered, ...ordinary, ...archives], pending = new Set(ordinary)
+      function placeFork(id) {
+        if (!pending.delete(id)) return
+        const parent = summaries[id]?.parentId
+        if (!parent || parent === id || !result.includes(parent)) return
+        placeFork(parent)
+        result.splice(result.indexOf(id), 1); result.splice(result.indexOf(parent), 0, id)
+      }
+      for (const id of [...ordinary].reverse()) placeFork(id)
+      return result
+    }
+
+    function accountOrders(workspaces, list, view) {
+      const accounted = new Set(workspaces.items.flatMap(w => w.sessionIds))
+      const members = Object.fromEntries(workspaces.items.map(w => [w.workspaceId, w.sessionIds]))
+      members[''] = list.ids.filter(id => list.byId[id] && !accounted.has(id))
+      members['__flat_session_order__'] = list.ids.filter(id => list.byId[id] && list.byId[id].origin !== 'subagent')
+      const current = Object.values(list.byId).find(row => (row.retainedBy?.mainView ?? 0) > 0)
+      const blank = current?.blank ? current.id : undefined
+      return Object.fromEntries(Object.entries(members).map(([key, ids]) => {
+        const base = view.orderBy === 'updated' ? recentOrder(ids, list.byId) : manualOrder(ids, view.sessionOrderByAccount[key], list.byId, workspaces)
+        return [key, blank && ids.includes(blank) ? [blank, ...base.filter(id => id !== blank)] : base]
+      }))
+    }
+
+    function ownPartition(context, workspaceId, sessionId) {
+      return (context.orders[workspaceId] ?? []).filter(id => id !== sessionId && context.pins.has(id) === context.pins.has(sessionId) && !context.archived.has(id) && !context.list.byId[id]?.blank && context.list.byId[id]?.origin !== 'subagent')
+    }
+
+    /** Resolve exact effective position, even when hovering the opposite pin partition. */
+    function dropTarget(element, clientY, sessionId, context) {
       const row = element?.closest?.('[data-row-key]')
       if (!row) return null
       const rows = treeRows(row)
       if (!rows) return null
-      const index = rows.findIndex((entry) => entry.row === row)
+      const index = rows.findIndex(entry => entry.row === row)
       if (index < 0) return null
       const key = rows[index].key
-      if (key.startsWith('workspace:')) return { id: key.slice('workspace:'.length), row }
-      if (key.startsWith('session:')) return workspaceAt(rows, index)
-      return null
+      if (key.startsWith('overflow:')) return null // Expand the native list before choosing hidden positions.
+      const workspace = key.startsWith('workspace:') ? { id: key.slice(10), row } : workspaceAt(rows, index)
+      if (!workspace?.id || !context.orders[workspace.id] || (!key.startsWith('workspace:') && !key.startsWith('session:') && !key.startsWith('overflow:'))) return null
+      const partition = ownPartition(context, workspace.id, sessionId)
+      const hovered = key.startsWith('session:') ? key.slice(8) : undefined
+      let before = partition[0]
+      if (hovered && partition.includes(hovered)) {
+        const rect = row.getBoundingClientRect()
+        before = clientY < rect.top + rect.height / 2 ? hovered : partition[partition.indexOf(hovered) + 1]
+      }
+      const workspaceIndex = rows.findIndex(entry => entry.row === workspace.row)
+      if (workspaceIndex < 0) return null
+      const memberRows = rows.slice(workspaceIndex + 1)
+      const untilNextGroup = []
+      for (const entry of memberRows) { if (entry.key.startsWith('workspace:')) break; if (entry.key.startsWith('session:')) untilNextGroup.push(entry) }
+      // A hidden successor directly after the hovered visible row is an exact visible boundary.
+      // A wholly hidden partition has no truthful line until the user expands it.
+      if (before && !untilNextGroup.some(entry => entry.key === 'session:' + before) && !(hovered && partition.includes(hovered))) return null
+      let lineRow = before ? untilNextGroup.find(entry => entry.key === 'session:' + before)?.row : undefined
+      let lineEdge = 'before'
+      if (!lineRow) {
+        const visibleOwn = untilNextGroup.filter(entry => partition.includes(entry.key.slice(8)))
+        if (visibleOwn.length) { lineRow = visibleOwn[visibleOwn.length - 1].row; lineEdge = 'after' }
+        else {
+          const placeholders = untilNextGroup.filter(entry => context.list.byId[entry.key.slice(8)]?.blank)
+          const pins = untilNextGroup.filter(entry => context.pins.has(entry.key.slice(8)))
+          lineRow = !context.pins.has(sessionId) && pins.length ? pins[pins.length - 1].row : placeholders[placeholders.length - 1]?.row ?? workspace.row
+          lineEdge = 'after'
+        }
+      }
+      return { ...workspace, before, lineRow, lineEdge, position: before ? { anchorSessionId: before, edge: 'before' } : { edge: 'end' } }
+    }
+
+    function spliceBefore(order, sessionId, before) {
+      const result = order.filter(id => id !== sessionId)
+      const index = before === undefined ? result.length : result.indexOf(before)
+      if (index < 0) throw new Error('STALE_POSITION')
+      result.splice(index, 0, sessionId)
+      return result
+    }
+
+    function restoreLocalBefore(order, sessionId, saved) {
+      const ids = order.filter(id => id !== sessionId), index = saved.indexOf(sessionId)
+      const next = saved.slice(index + 1).find(id => ids.includes(id))
+      if (next) return next
+      const previous = saved.slice(0, index).reverse().find(id => ids.includes(id))
+      return previous ? ids[ids.indexOf(previous) + 1] : ids[Math.min(Math.max(index, 0), ids.length)]
+    }
+
+    function orderSignature(orders, exclude) {
+      return JSON.stringify(Object.keys(orders).sort().map(key => [key, orders[key].filter(id => id !== exclude)]))
+    }
+
+    // Wait for the actual workspace stream, not a guessed timer or DOM row count.
+    function waitForMembership(sessionId, sourceId, targetId) {
+      const source = clientContext.get('workspaces')?.list
+      if (!source?.subscribe) return Promise.reject(new Error('ORDER_UNAVAILABLE'))
+      return new Promise((resolve, reject) => {
+        let stop, timer, done = false
+        const finish = error => {
+          if (done) return
+          done = true; if (timer) window.clearTimeout(timer); stop?.()
+          error ? reject(error) : resolve()
+        }
+        const check = () => {
+          const snapshot = source.getSnapshot()
+          const target = snapshot.items.find(w => w.workspaceId === targetId)
+          const previous = snapshot.items.find(w => w.workspaceId === sourceId)
+          if (snapshot.phase === 'ready' && target?.sessionIds.includes(sessionId) && !previous?.sessionIds.includes(sessionId)) finish()
+        }
+        stop = source.subscribe(check)
+        timer = window.setTimeout(() => finish(new Error('Workspace membership did not settle')), 8000)
+        check()
+      })
+    }
+
+    function applyLocalPlacement(context, sessionId, sourceId, targetId, before) {
+      const orders = { ...context.orders }
+      orders[sourceId] = (orders[sourceId] ?? []).filter(id => id !== sessionId)
+      const next = spliceBefore(orders[targetId] ?? [], sessionId, before)
+      context.store.actions.setSessionOrder(targetId, next, orders)
+      return context.store.getSnapshot()
     }
 
     /** Sidebar title of a Workspace row, for the notice text. */
@@ -141,6 +286,8 @@ window.__ModuleLoader__.load({
 
     const CSS = `
       .dsm-workspace-drop { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: -2px; border-radius: 8px; background: var(--dsw-alias-interactive-bg-hover) !important; }
+      .dsm-insertion-line { pointer-events: none; position: fixed; z-index: 75; height: 2px; border-radius: 2px; background: var(--dsw-alias-brand-primary); box-shadow: 0 0 0 1px var(--dsw-alias-bg-overlay); }
+      .dsm-insertion-line::before { content: ''; position: absolute; width: 6px; height: 6px; border: 2px solid var(--dsw-alias-brand-primary); border-radius: 50%; background: var(--dsw-alias-bg-overlay); left: -2px; top: -4px; }
       .dsm-notice { pointer-events: auto; position: fixed; left: 50%; bottom: 28px; z-index: 70; display: flex; align-items: center; gap: 12px; max-width: min(520px, 82vw); padding: 10px 12px 10px 16px; box-sizing: border-box; border: 1px solid var(--dsw-alias-border-l1); border-radius: 12px; background: var(--dsw-alias-bg-overlay); color: var(--dsw-alias-label-primary); box-shadow: var(--dsw-shadow-lv2); font-family: var(--dsw-font-family), system-ui, sans-serif; font-size: 13px; line-height: 20px; transform: translateX(-50%); }
       .dsm-notice[data-kind='error'] { border-color: var(--dsw-alias-state-danger-primary); }
       .dsm-notice-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
@@ -159,9 +306,10 @@ window.__ModuleLoader__.load({
      * @param props - slot props plus the locale `t`.
      */
     function Mover({ t }) {
-      const label = translator(t)
+      const label = React.useMemo(() => translator(t), [t])
       const [notice, setNotice] = React.useState(null)
       const [busy, setBusy] = React.useState(false)
+      const [insertion, setInsertion] = React.useState(null)
       const drag = React.useRef(null)
       const highlighted = React.useRef(null)
       const busyRef = React.useRef(false)
@@ -170,21 +318,45 @@ window.__ModuleLoader__.load({
       const clearHighlight = React.useCallback(() => {
         highlighted.current?.classList.remove(DROP_CLASS)
         highlighted.current = null
+        setInsertion(null)
       }, [])
 
       /** Drag and undo await the same Host transaction and its actual outcome. */
-      const relocate = React.useCallback(async (sessionId, workspaceId, title, undoTo, undoing = false) => {
+      const relocate = React.useCallback(async (sessionId, workspaceId, title, sourceId, options = {}) => {
         if (busyRef.current) return
         busyRef.current = true
         setBusy(true)
         try {
-          const result = await post('relocate', { sessionId, workspaceId })
+          const context = nativeOrderContext()
+          const saved = { orders: structuredClone(context.orders), mode: context.view.orderBy, sourceId, targetId: workspaceId, localApplied: false }
+          const result = await post('relocate', { sessionId, workspaceId, ...(options.undoToken ? { undoToken: options.undoToken } : options.position ? { position: options.position } : {}) })
           if (result.ok) {
+            let orderError = false
+            try {
+              await waitForMembership(sessionId, result.source.id, result.target.id)
+              const fresh = nativeOrderContext()
+              if (options.undoToken) {
+                const original = options.localUndo
+                if (original.localApplied) {
+                  const before = restoreLocalBefore(fresh.orders[result.target.id] ?? [], sessionId, original.orders[result.target.id] ?? [])
+                  const unchanged = fresh.view.orderBy === 'manual' && orderSignature(fresh.view.sessionOrderByAccount, sessionId) === original.afterSignature
+                  applyLocalPlacement(fresh, sessionId, result.source.id, result.target.id, before)
+                  if (original.mode === 'updated' && unchanged) fresh.store.actions.setOrderBy('updated', {})
+                }
+              } else {
+                let before = options.position?.edge === 'end' ? undefined : options.position?.anchorSessionId ?? ownPartition(fresh, result.target.id, sessionId)[0]
+                // A concurrent native pin/reorder must not change another item's order.
+                if (before && !ownPartition(fresh, result.target.id, sessionId).includes(before)) before = ownPartition(fresh, result.target.id, sessionId)[0]
+                const view = applyLocalPlacement(fresh, sessionId, result.source.id, result.target.id, before)
+                saved.localApplied = true
+                saved.afterSignature = orderSignature(view.sessionOrderByAccount, sessionId)
+              }
+            } catch (error) { orderError = true; console.warn('session-mover display order', error) }
             try { await refreshMoved(sessionId) } catch (error) { console.warn('session-mover metadata refresh', error) }
             setNotice({
-              kind: 'ok',
-              text: undoing ? label('undone') : label('moved').replace('{name}', title),
-              undo: undoTo ? { sessionId, workspaceId: undoTo } : null,
+              kind: orderError ? 'error' : 'ok',
+              text: orderError ? label('orderFailed') : options.undoToken ? label('undone') : label('moved').replace('{name}', title),
+              undo: result.undoToken ? { sessionId, workspaceId: result.source.id, sourceId: result.target.id, undoToken: result.undoToken, localUndo: saved } : null,
             })
           } else {
             let reason = result.error ?? ''
@@ -195,7 +367,8 @@ window.__ModuleLoader__.load({
             setNotice({ kind: 'error', text: label('failed').replace('{reason}', reason), undo: null })
           }
         } catch (error) {
-          setNotice({ kind: 'error', text: label('failed').replace('{reason}', String(error?.message ?? error)), undo: null })
+          const reason = error?.message === 'ORDER_UNAVAILABLE' ? label('orderUnavailable') : error?.message === 'STALE_POSITION' ? label('stalePosition') : String(error?.message ?? error)
+          setNotice({ kind: 'error', text: label('failed').replace('{reason}', reason), undo: null })
         } finally {
           busyRef.current = false
           setBusy(false)
@@ -211,13 +384,19 @@ window.__ModuleLoader__.load({
           if (!rows) return
           const index = rows.findIndex((entry) => entry.row === row)
           const owner = workspaceAt(rows, index)
-          drag.current = { sessionId: key.slice('session:'.length), source: owner?.id ?? null }
+          if (!owner?.id || busyRef.current) return
+          try {
+            const context = nativeOrderContext()
+            if (context.archived.has(key.slice(8))) return
+            drag.current = { sessionId: key.slice(8), source: owner.id }
+          } catch { drag.current = null }
         }
 
         const onDragOver = (event) => {
           const current = drag.current
           if (!current) return
-          const target = dropTarget(event.target)
+          let target
+          try { target = dropTarget(event.target, event.clientY, current.sessionId, nativeOrderContext()) } catch { clearHighlight(); return }
           if (!target || !target.id || target.id === current.source) {
             clearHighlight()
             return
@@ -227,8 +406,18 @@ window.__ModuleLoader__.load({
             highlighted.current = target.row
             target.row.classList.add(DROP_CLASS)
           }
+          const rect = target.lineRow.getBoundingClientRect()
+          const tree = target.row.closest('[role=tree]')
+          let viewportTop = 0, viewportBottom = window.innerHeight
+          for (let parent = tree; parent; parent = parent.parentElement) {
+            if (/auto|scroll|hidden|clip/.test(window.getComputedStyle(parent).overflowY)) { const bounds = parent.getBoundingClientRect(); viewportTop = Math.max(viewportTop, bounds.top); viewportBottom = Math.min(viewportBottom, bounds.bottom) }
+          }
+          const y = target.lineEdge === 'before' ? rect.top : rect.bottom
+          const nextInsertion = y >= viewportTop && y <= viewportBottom ? { left: rect.left + 12, top: y - 1, width: Math.max(0, rect.width - 24) } : null
+          setInsertion(previous => JSON.stringify(previous) === JSON.stringify(nextInsertion) ? previous : nextInsertion)
           if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
           event.preventDefault()
+          event.stopPropagation()
         }
 
         const onDrop = (event) => {
@@ -236,11 +425,12 @@ window.__ModuleLoader__.load({
           drag.current = null
           clearHighlight()
           if (!current) return
-          const target = dropTarget(event.target)
+          let target
+          try { target = dropTarget(event.target, event.clientY, current.sessionId, nativeOrderContext()) } catch { return }
           if (!target || !target.id || target.id === current.source) return
           event.preventDefault()
           event.stopPropagation()
-          void relocate(current.sessionId, target.id, rowTitle(target.row), current.source)
+          void relocate(current.sessionId, target.id, rowTitle(target.row), current.source, { position: target.position })
         }
 
         const onDragEnd = () => {
@@ -252,11 +442,13 @@ window.__ModuleLoader__.load({
         document.addEventListener('dragover', onDragOver, true)
         document.addEventListener('drop', onDrop, true)
         document.addEventListener('dragend', onDragEnd, true)
+        document.addEventListener('scroll', clearHighlight, true)
         return () => {
           document.removeEventListener('dragstart', onDragStart, true)
           document.removeEventListener('dragover', onDragOver, true)
           document.removeEventListener('drop', onDrop, true)
           document.removeEventListener('dragend', onDragEnd, true)
+          document.removeEventListener('scroll', clearHighlight, true)
           clearHighlight()
         }
       }, [clearHighlight, relocate])
@@ -267,9 +459,11 @@ window.__ModuleLoader__.load({
         return () => { window.clearTimeout(timer) }
       }, [notice, busy])
 
-      if (!notice && !busy) return null
+      if (!notice && !busy) return insertion ? h('div', { className: 'dsm-insertion-line', style: insertion, 'aria-hidden': true }) : null
 
-      return h(
+      return h(React.Fragment, null,
+        insertion ? h('div', { className: 'dsm-insertion-line', style: insertion, 'aria-hidden': true }) : null,
+        h(
         'div',
         {
           className: 'dsm-notice',
@@ -285,11 +479,11 @@ window.__ModuleLoader__.load({
             className: 'dsm-notice-action',
             onClick: () => {
               const action = notice.undo
-              void relocate(action.sessionId, action.workspaceId, '', null, true)
+              void relocate(action.sessionId, action.workspaceId, '', action.sourceId, { undoToken: action.undoToken, localUndo: action.localUndo })
             },
           }, label('undo'))
           : null,
-      )
+      ))
     }
 
     /** Diagnostic seat: reports the sidebar grouping whenever it changes. */
@@ -314,9 +508,12 @@ window.__ModuleLoader__.load({
             }
           }
           const signature = JSON.stringify(rows.map((row) => [row.kind, row.id, row.group, row.title]))
-          if (signature === last.current) return
+          if (signature === last.current && last.ready) return
           last.current = signature
-          post('probe', { at: new Date().toISOString(), rows }).catch(() => { last.current = '' })
+          let ordering
+          try { const native = nativeOrderContext(); ordering = { ready: true, orderBy: native.view.orderBy, completeCounts: Object.fromEntries(Object.entries(native.orders).map(([key, ids]) => [key, ids.length])) } } catch { ordering = { ready: false } }
+          last.ready = ordering.ready
+          post('probe', { at: new Date().toISOString(), version: '0.3.0', ordering, rows }).catch(() => { last.current = '' })
         }
         tick()
         const timer = window.setInterval(tick, 2000)
