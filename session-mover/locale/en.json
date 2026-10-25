@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Session Mover",
+    "description": "Drag idle conversations, including loaded ones, to another workspace. History and pending input are preserved."
+  }
+}

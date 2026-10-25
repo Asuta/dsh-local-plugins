@@ -13,6 +13,9 @@
 | [sidebar-more](./sidebar-more) | 侧栏精简：只保留插件市场与「更多」，把插件与自动化任务收进「更多」，含置顶会话处理 | `sidebar.footer.action`、`sidebar.panellist.actions` |
 | [hide-new-session](./hide-new-session) | 隐藏侧栏顶部的「新会话」按钮（纯 CSS 注入，不占用 slot） | — |
 | [archived-sessions](./archived-sessions) | 归档会话管理：在设置页里列出、恢复、永久删除已归档会话 | `settings.section` |
+| [session-mover](./session-mover) | 跨工作区拖拽空闲对话，支持已加载会话、待发队列保留、撤销和失败回滚；同步修改工作目录 | `shell.overlay` + Host 搬移服务 |
+
+`session-mover` 当前版本为 **0.2.1**。目标对话必须空闲；运行中的回复、工具或维护操作需先停止。实现依赖部分 DSH 私有生命周期接口，升级 DSH 后可能需要适配；接口形状不兼容时拒绝搬移。
 
 ## 目录约定
 

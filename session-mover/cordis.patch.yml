@@ -1,0 +1,4 @@
+- insert:
+    - id: session-mover
+      name: '@local/session-mover'
+      config: {}

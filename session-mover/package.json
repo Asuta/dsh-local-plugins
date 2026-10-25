@@ -1,0 +1,35 @@
+{
+  "name": "@local/session-mover",
+  "version": "0.2.1",
+  "private": true,
+  "type": "module",
+  "description": "Drag idle conversations, including loaded ones, between workspaces with history and pending input preserved. · 拖拽移动空闲对话，支持已打开的对话，保留历史与待发消息。",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "mover.js"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-locale"
+      ]
+    }
+  }
+}
