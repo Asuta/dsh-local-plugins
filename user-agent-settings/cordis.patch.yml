@@ -1,0 +1,4 @@
+- insert:
+    - id: user-agent-settings
+      name: '@local/user-agent-settings'
+      config: {}

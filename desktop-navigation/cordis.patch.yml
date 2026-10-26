@@ -1,0 +1,4 @@
+- insert:
+    - id: desktop-enhancements
+      name: '@local/desktop-enhancements'
+      config: {}

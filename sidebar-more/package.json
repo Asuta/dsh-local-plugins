@@ -1,6 +1,6 @@
 {
   "name": "@local/sidebar-more",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "type": "module",
   "description": "Keep Plugin Market and More in the sidebar, with Plugins and Automation tasks inside More. · 侧栏只保留插件市场与更多，把插件和自动化任务收进「更多」。",

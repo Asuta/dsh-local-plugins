@@ -1,0 +1,14 @@
+{
+  "package": "dsh-recent",
+  "version": "0.1.0",
+  "license": "MIT",
+  "author": "ttmouse",
+  "source": "https://github.com/ttmouse/dsh-recent",
+  "sha256": "f37ef572734da68056a8385d833af5354f5fa4641d166c59cbc71791daf2ba8e",
+  "changes": [
+    "180ms height and opacity disclosure",
+    "arrow reduced-motion rule",
+    "disable sentinel while folded",
+    "Chat native file navigation adapter"
+  ]
+}

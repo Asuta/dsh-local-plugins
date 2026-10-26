@@ -44,15 +44,30 @@ window.__ModuleLoader__.load({
       // 「置顶」 section. Every row is 32px, matching a workspace session row, and
       // the list stops at eight rows before wrapping into its own scroller so a
       // long pin list cannot push the workspace tree off the column.
-      `.sm-pin-section { flex: none; display: flex; flex-direction: column; min-height: 0; padding-bottom: 2px; }`,
-      `.sm-pin-header { display: flex; align-items: center; flex: none; height: 26px; }`,
+      //
+      // The trailing 8px completes the shell's own section rhythm. 「工作区」 is a
+      // native section header and brings only its `margin-top: 2px`; a native
+      // section above 「最近」 instead gets `margin-bottom: 4px` from the header
+      // plus that section's `padding-top: 12px` — 16px in total. Without the
+      // extra 8px 「置顶」 ends up 8px tighter than the 「工作区」/「最近」 pair.
+      `.sm-pin-section { flex: none; display: flex; flex-direction: column; min-height: 0;
+        padding-bottom: 2px; margin-bottom: 8px; }`,
+      // The header copies the shell's own section header verbatim — 36px row,
+      // `2px 0 4px` margins, 4px inline padding, 14px/400 label on a 20px line
+      // box — so 「置顶」 sits in the column as one more native section beside
+      // 「工作区」 instead of reading as a smaller, bolder interloper.
+      `.sm-pin-header { display: flex; align-items: center; flex: none; height: 36px;
+        margin: 2px 0 4px; padding-left: 4px; }`,
       `.sm-pin-toggle { display: flex; align-items: center; justify-content: flex-start; gap: 4px;
-        flex: 1; min-width: 0; height: 22px; margin: 0 0 0 -6px; padding: 0 6px; border: 0;
-        border-radius: var(--dsw-radius-sm); background: none; color: var(--dsw-alias-label-tertiary);
-        font: inherit; font-size: 12px; font-weight: 500; cursor: pointer; }
-      .sm-pin-toggle:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-secondary); }
+        flex: 1; min-width: 0; height: 100%; margin: 0; padding: 0; border: 0;
+        border-radius: 12px; background: none; color: var(--dsw-alias-label-tertiary);
+        font: inherit; font-size: 14px; font-weight: 400; line-height: 20px;
+        text-align: left; cursor: pointer; }
+      /* No hover fill here: the shell's own section header has no hover state,
+         and this toggle spans the whole row, so a pill would read as a stray
+         control next to 「工作区」/「最近」. Keyboard focus stays visible. */
       .sm-pin-toggle:focus-visible { outline: 1px solid var(--dsw-alias-label-tertiary); outline-offset: 1px; }`,
-      `.sm-pin-chevron { width: 12px; height: 12px; flex: none; transform: rotate(0deg); transition: transform 120ms ease; }`,
+      `.sm-pin-chevron { width: 16px; height: 16px; flex: none; transform: rotate(0deg); transition: transform 120ms ease; }`,
       `.sm-pin-chevron-open { transform: rotate(90deg); }`,
       `.sm-pin-list { display: flex; flex-direction: column; gap: 1px; margin: 0; padding: 0;
         list-style: none; max-height: 268px; overflow-y: auto; overscroll-behavior: contain;
@@ -79,6 +94,79 @@ window.__ModuleLoader__.load({
     const zh = { plugins: '插件', schedules: '自动化任务', pinned: '置顶', unpin: '取消置顶', untitled: '未命名' }
 
     const EXPANDED_STORE_KEY = 'sidebar-more:view.pinnedExpanded'
+
+    // Borrow the native workspace owner's authorized child renderer. Never clone
+    // its registration/children: that would duplicate slot ownership and stores.
+    const nativeRowBridge = (() => {
+      let current = null
+      const listeners = new Set()
+      return {
+        getSnapshot: () => current,
+        subscribe: (listener) => { listeners.add(listener); return () => listeners.delete(listener) },
+        publish: (value) => {
+          if (current === value) return
+          current = value
+          for (const listener of listeners) listener()
+        },
+        release: (value) => { if (current === value) nativeRowBridge.publish(null) },
+      }
+    })()
+
+    function installNativeRowBridge(ctx) {
+      const slots = ctx.slots
+      const original = Symbol.for('cordis.original')
+      const owned = Symbol.for('sidebar-more.workspace-row-bridge')
+      return slots.inject('sidebar.workspaces', () => {
+        let patch = null, changing = false, stopped = false
+        const notify = () => {
+          const dispose = slots.register({ name: 'sidebar.footer.action', id: 'sidebar-more.invalidate', order: 10000 }, () => null)
+          dispose()
+        }
+        const restore = () => {
+          if (!patch) return
+          const { entry, descriptor, wrapper } = patch
+          patch = null
+          if (entry.component === wrapper) Object.defineProperty(entry, 'component', descriptor)
+        }
+        const reconcile = () => {
+          if (stopped || changing) return
+          changing = true
+          try {
+            const candidate = slots.entriesOfSlot('sidebar.workspaces')[0]
+            const entry = candidate?.[original] ?? candidate
+            if (patch && patch.entry === entry && entry.component === patch.wrapper) return
+            restore()
+            if (!entry || typeof entry.component !== 'function' || !entry.children || !entry.store) throw new Error('unsupported-workspace-entry')
+            const descriptor = Object.getOwnPropertyDescriptor(entry, 'component')
+            if (!descriptor || (!descriptor.writable && !descriptor.configurable) || entry.component[owned]) throw new Error('unsupported-workspace-component')
+            const NativeWorkspaceBrowser = entry.component
+            function WorkspaceWithPinnedRows(props) {
+              const bridge = React.useMemo(() => ({ renderSlot: props.renderSlot, t: props.t, requestSessionRename: props.requestSessionRename }), [props.renderSlot, props.t, props.requestSessionRename])
+              React.useLayoutEffect(() => {
+                nativeRowBridge.publish(bridge)
+                return () => nativeRowBridge.release(bridge)
+              }, [bridge])
+              return React.createElement(NativeWorkspaceBrowser, props)
+            }
+            Object.defineProperty(WorkspaceWithPinnedRows, owned, { value: true })
+            Object.defineProperty(WorkspaceWithPinnedRows, 'displayName', { value: 'WorkspaceWithPinnedRows' })
+            Object.defineProperty(entry, 'component', { ...descriptor, value: WorkspaceWithPinnedRows })
+            patch = { entry, descriptor, wrapper: WorkspaceWithPinnedRows }
+            notify()
+          } catch (error) { console.warn('sidebar-more: native row bridge:', error) }
+          finally { changing = false }
+        }
+        const unsubscribe = slots.subscribe('sidebar.workspaces', reconcile)
+        reconcile()
+        return () => {
+          stopped = true
+          unsubscribe()
+          nativeRowBridge.publish(null)
+          changing = true
+          try { restore(); notify() } finally { changing = false }
+        }
+      })
+    }
 
     /** Stand-in for the slot's store hooks so a missing share cannot break the column. */
     const NOOP_STORE = () => undefined
@@ -168,7 +256,7 @@ window.__ModuleLoader__.load({
      * follow by most recent update.
      * @returns `{ id, title, updatedAt, running }[]`.
      */
-    function pinnedRows(list, workspaces) {
+    function pinnedRows(list, workspaces, statuses) {
       const byId = list?.byId
       const pinned = workspaces?.pinnedSessionIds
       if (byId === null || byId === undefined || !Array.isArray(pinned)) return []
@@ -181,54 +269,109 @@ window.__ModuleLoader__.load({
         if (session.origin === 'subagent') continue
         if (session.blank === true) continue
         if (archived.has(id)) continue
+        const status = statuses?.get?.(id)
+        const pending = status?.pendingInteraction?.kind
+        const children = list?.projectionsBySession?.[id]?.values?.subagentCatalog
         rows.push({
           id,
-          title: typeof session.displayTitle === 'string' ? session.displayTitle : '',
+          title: typeof session.title === 'string' ? session.title.trim() : '',
           updatedAt: typeof session.updatedAt === 'number' ? session.updatedAt : 0,
-          running: session.running === true,
+          running: status?.running ?? session.running === true,
+          completed: status?.completionUnread === true,
+          pendingInteraction: ['approval', 'plan-review', 'question'].includes(pending) ? pending : undefined,
+          runningSubagentCount: Array.isArray(children) ? children.reduce((n, child) => n + ((statuses?.get?.(child.id)?.running ?? byId[child.id]?.running) === true ? 1 : 0), 0) : 0,
         })
       }
       rows.sort((left, right) => (Number(right.running) - Number(left.running)) || (right.updatedAt - left.updatedAt))
       return rows
     }
 
-    /** One pinned conversation: opens on click, unpins from the hover control. */
-    function PinnedRow({ row, current, label, onOpen, onUnpin }) {
-      return React.createElement(
-        'li',
-        { className: 'sm-pin-item' },
-        React.createElement(
-          'div',
-          {
-            className: 'sm-pin-row',
-            role: 'button',
-            tabIndex: 0,
-            title: row.title,
-            'aria-current': current ? 'page' : undefined,
-            onClick: () => { onOpen(row.id) },
-            onKeyDown: (event) => {
-              if (event.key !== 'Enter' && event.key !== ' ') return
-              event.preventDefault()
-              onOpen(row.id)
-            },
-          },
-          React.createElement('span', { className: 'sm-pin-title' }, row.title === '' ? label('untitled') : row.title),
-          React.createElement(
-            'button',
-            {
-              type: 'button',
-              className: 'sm-pin-action',
-              'aria-label': label('unpin'),
-              title: label('unpin'),
-              onClick: (event) => {
-                event.stopPropagation()
-                onUnpin(row.id)
-              },
-            },
-            React.createElement(primitives.IconPinFillRegular, null),
-          ),
-        ),
-      )
+    // Native CSS is already loaded by the workspace owner. Derive its prefix
+    // from the actual stylesheet instead of freezing this build's CSS hash.
+    function nativeRowClasses() {
+      const tag = document.querySelector('style[data-plugin-css="@deepseek-ai/dsh-client-ui-workspace/Rows.module.css"]')
+      const prefix = tag?.textContent?.match(/\.([A-Za-z_][A-Za-z0-9_-]*)_sessionRow[{:., ]/)?.[1]
+      if (!prefix) return null
+      const names = ['sessionRow', 'selected', 'menuOpen', 'slot', 'title', 'time', 'pinIndicator', 'rowActions', 'iconButton', 'visuallyHidden', 'hoverContent', 'hoverTitle', 'hoverTime', 'hoverStatus']
+      return Object.fromEntries(names.map(name => [name, `${prefix}_${name}`]))
+    }
+
+    function rowStatuses(row, t) {
+      const child = row.runningSubagentCount > 0 ? { state: 'ongoing', label: t(row.runningSubagentCount === 1 ? 'status.subagentsRunning.one' : 'status.subagentsRunning.other', { n: row.runningSubagentCount }) } : undefined
+      const pending = { approval: ['status.waitingApproval', 'status.compact.approval'], 'plan-review': ['status.planReview', 'status.compact.planReview'], question: ['status.waitingAnswer', 'status.compact.answer'] }[row.pendingInteraction]
+      const primary = pending ? { state: 'warning', label: t(pending[0]), trailingLabel: t(pending[1]) }
+        : row.running ? { state: 'ongoing', label: t('status.running') }
+        : child ?? (row.completed ? { state: 'done', label: t('status.completed') } : { state: 'idle', label: t('status.idle') })
+      return child && child !== primary ? [primary, child] : [primary]
+    }
+
+    function relativeLabel(updatedAt, now, t, hover = false) {
+      const { unit, n } = primitives.relativeTime(updatedAt, now)
+      const value = unit === 'now' ? t('time.now') : t(`time.${unit}`, { n })
+      return hover && unit !== 'now' ? t('time.ago', { t: value }) : value
+    }
+
+    function PinnedRow({ row, current, label, onOpen, onUnpin, native, now }) {
+      const [menuOpen, setMenuOpen] = React.useState(false)
+      const menuOpenState = React.useMemo(() => [menuOpen, setMenuOpen], [menuOpen])
+      const titleRef = React.useRef(null)
+      const frame = React.useRef(0)
+      React.useEffect(() => () => window.cancelAnimationFrame(frame.current), [])
+      const classes = nativeRowClasses()
+      // During native owner startup/reload keep the original safe minimal row.
+      if (!native || !classes) return React.createElement('li', { className: 'sm-pin-item' },
+        React.createElement('div', { className: 'sm-pin-row sm-pin-fallback', role: 'treeitem', tabIndex: 0, 'aria-selected': current, onClick: () => onOpen(row.id), onKeyDown: e => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onOpen(row.id) } } },
+          React.createElement('span', { className: 'sm-pin-title' }, row.title || label('untitled')),
+          React.createElement('button', { type: 'button', className: 'sm-pin-action', 'aria-label': label('unpin'), onClick: e => { e.stopPropagation(); onUnpin(row.id) } }, React.createElement(primitives.IconPinFillRegular))))
+      const { renderSlot, t } = native
+      const statuses = rowStatuses(row, t)
+      const primary = statuses[0]
+      const title = row.title || t('session.untitled')
+      const childProps = { sessionId: row.id, displayTitle: row.title }
+      const enterTitle = () => {
+        const element = titleRef.current
+        if (!element) return
+        window.cancelAnimationFrame(frame.current)
+        const range = element.scrollWidth - element.clientWidth
+        if (range <= 8) return
+        const place = position => { element.scrollLeft = position; element.toggleAttribute('data-scrolled', position > 0); element.toggleAttribute('data-clipped', position < range) }
+        if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) { place(range); return }
+        let start
+        const step = time => {
+          if (start === undefined) start = time
+          const position = Math.min((time - start) * 0.03, range)
+          place(position)
+          if (position < range) frame.current = window.requestAnimationFrame(step)
+        }
+        frame.current = window.requestAnimationFrame(step)
+      }
+      const leaveTitle = () => {
+        window.cancelAnimationFrame(frame.current)
+        if (titleRef.current) { titleRef.current.scrollLeft = 0; titleRef.current.removeAttribute('data-scrolled'); titleRef.current.removeAttribute('data-clipped') }
+      }
+      const status = React.createElement(React.Fragment, null, React.createElement(primitives.StateDot, { state: primary.state }), statuses.map(item => React.createElement('span', { key: item.label, className: classes.visuallyHidden }, item.label)))
+      const anchor = React.createElement('div', {
+        className: [classes.sessionRow, current && classes.selected, menuOpen && classes.menuOpen, 'sm-pin-native-row'].filter(Boolean).join(' '),
+        'data-row-key': `session:${row.id}`, 'data-sm-native-row': '', role: 'treeitem', tabIndex: 0, 'aria-selected': current,
+        onClick: () => onOpen(row.id), onPointerEnter: enterTitle, onPointerLeave: leaveTitle,
+        onKeyDown: e => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onOpen(row.id) } },
+      },
+        React.createElement('span', { className: classes.slot }, primary.state !== 'idle' ? status : renderSlot('sidebar.session.row.leading', { sessionId: row.id })),
+        React.createElement('span', { ref: titleRef, className: classes.title, onDoubleClick: e => { e.stopPropagation(); native.requestSessionRename?.(row.id, row.title) } }, title),
+        React.createElement('span', { className: classes.time, 'aria-hidden': primary.trailingLabel ? true : undefined }, primary.trailingLabel ?? relativeLabel(row.updatedAt, now, t)),
+        React.createElement('span', { className: classes.pinIndicator, role: 'img', 'aria-label': t('row.pinned'), title: t('row.pinned') }, React.createElement(primitives.IconPinFillRegular, { size: 14 })),
+        React.createElement('span', { className: classes.rowActions, onClick: e => e.stopPropagation(), onKeyDown: e => e.stopPropagation() },
+          React.createElement(primitives.Menu, {
+            open: menuOpen, onClose: () => setMenuOpen(false), portal: true, closeOnPointerLeave: true,
+            anchor: React.createElement('button', { type: 'button', className: classes.iconButton, 'aria-label': t('actions.session.aria', { name: title }), onClick: () => setMenuOpen(value => !value) }, React.createElement(primitives.IconEllipsisOutlineRegular)),
+          }, renderSlot('sidebar.workspaces.session.menu.item', childProps, { hookContext: menuOpenState })),
+          renderSlot('sidebar.workspaces.session.row.action', childProps)))
+      const content = React.createElement('div', { className: classes.hoverContent },
+        React.createElement('div', { className: classes.hoverTitle }, title),
+        React.createElement('div', { className: classes.hoverTime }, relativeLabel(row.updatedAt, now, t, true)),
+        renderSlot('sidebar.session.row.hover', { sessionId: row.id }),
+        statuses.map(item => React.createElement('div', { key: item.label, className: classes.hoverStatus }, React.createElement(primitives.StateDot, { state: item.state }), React.createElement('span', null, item.label))))
+      return React.createElement('li', { className: 'sm-pin-item' }, React.createElement(primitives.HoverCard, { anchor, content, openDelayMs: 800, grouped: true, disabled: menuOpen, copyText: row.title || undefined, copyLabel: t('copy'), copiedLabel: t('hover.copied') }))
     }
 
     /**
@@ -240,9 +383,18 @@ window.__ModuleLoader__.load({
       const list = (props.useSessions ?? NOOP_STORE)((snapshot) => snapshot)
       const workspaces = (props.useWorkspaces ?? NOOP_STORE)((snapshot) => snapshot)
       const label = translator(props.t)
-      const rows = React.useMemo(() => pinnedRows(list, workspaces), [list, workspaces])
-      const current = currentSessionId(list)
+      const statuses = (props.useSessionStatus ?? NOOP_STORE)((snapshot) => snapshot)
+      const panelActive = (props.usePanelInfo ?? NOOP_STORE)((info) => info.activePanelId !== null)
+      const native = React.useSyncExternalStore(nativeRowBridge.subscribe, nativeRowBridge.getSnapshot, nativeRowBridge.getSnapshot)
+      const rows = React.useMemo(() => pinnedRows(list, workspaces, statuses), [list, workspaces, statuses])
+      const current = panelActive ? undefined : currentSessionId(list)
+      const [now, setNow] = React.useState(Date.now)
       const [expanded, setExpanded] = React.useState(loadExpanded)
+      React.useEffect(() => {
+        if (props.wide !== true || !expanded || rows.length === 0) return undefined
+        const timer = window.setInterval(() => setNow(Date.now()), 30000)
+        return () => window.clearInterval(timer)
+      }, [props.wide, expanded, rows.length])
       const [anchor, setAnchor] = React.useState(undefined)
       const section = React.useRef(null)
 
@@ -343,6 +495,8 @@ window.__ModuleLoader__.load({
                 label,
                 onOpen: props.openSession,
                 onUnpin: props.unpin,
+                native,
+                now,
               }),
             ),
           ),
@@ -380,6 +534,8 @@ window.__ModuleLoader__.load({
       inject: ['slots', 'locale', 'uiSession', 'uiWorkspace'],
       apply(ctx) {
         const workspaces = ctx.uiWorkspace
+
+        ctx.effect(() => installNativeRowBridge(ctx), 'sidebar-more: native row bridge')
 
         ctx.effect(() => ctx.locale.register('sidebarMore', { en, zh }), 'sidebar-more: locale')
 
