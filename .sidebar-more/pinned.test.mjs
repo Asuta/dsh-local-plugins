@@ -92,27 +92,180 @@ test('title doubleclick requests native rename and stops propagation', () => { c
 test('native HoverCard preserves portal-independent hover properties', () => { const h = harness(); const r = nativeRow(h); const hover = walk(r.tree, node => node.type === h.primitives.HoverCard)[0]; assert.equal(hover.props.openDelayMs, 800); assert.equal(hover.props.grouped, true); assert.equal(hover.props.disabled, false); assert.equal(hover.props.copyText, 'Pinned title'); assert.equal(hover.props.copyLabel, 'copy') })
 test('missing native bridge or CSS uses safe fallback with isolated unpin', () => { for (const options of [{ css: null }, {}]) { const h = harness(options); const r = nativeRow(h, options.css === null ? {} : { native: null }); const fallback = walk(r.tree, node => node.props?.className === 'sm-pin-row sm-pin-fallback')[0]; assert.ok(fallback); const button = walk(fallback, node => node.type === 'button')[0]; let stopped = false; button.props.onClick({ stopPropagation() { stopped = true } }); assert.equal(stopped, true); assert.deepEqual(r.unpinned, ['p']); assert.deepEqual(r.opened, []) } })
 
-function bridgeFixture(h, { canonicalProxy = false, descriptor = {} } = {}) {
+function bridgeFixture(h, { canonicalProxy = false, descriptor = {}, priority = 0, shadows = [], synchronous = false } = {}) {
   function Original(props) { return props }
-  const entry = { children: { native: true }, store: { identity: 'native-store' } }
+  const entry = { options: { priority }, children: { native: true }, store: { identity: 'native-store' } }
   Object.defineProperty(entry, 'component', { value: Original, writable: true, enumerable: false, configurable: true, ...descriptor })
+  const canonical = value => value?.[Symbol.for('cordis.original')] ?? value
   let candidate = canonicalProxy ? { [Symbol.for('cordis.original')]: entry } : entry
-  let subscribed = null, unsubscribed = 0
-  const registrations = []
+  let subscribed = null, unsubscribed = 0, declared = true, scheduled = false, inactive = false
+  const registrations = [], active = [], mutations = [], versions = new Map(), listeners = new Map(), dirty = new Set(), disposers = []
+  // SlotCore increments only the mutated key's version, then batches its
+  // subscribers in a microtask. The sync mode additionally probes reentrancy.
+  const dispatch = key => { for (const callback of [...(listeners.get(key) ?? [])]) callback() }
+  const mutate = key => {
+    versions.set(key, (versions.get(key) ?? 0) + 1)
+    mutations.push(key)
+    if (synchronous) return dispatch(key)
+    dirty.add(key)
+    if (scheduled) return
+    scheduled = true
+    queueMicrotask(() => { scheduled = false; const keys = [...dirty]; dirty.clear(); for (const key of keys) dispatch(key) })
+  }
   const slots = {
     inject(key, callback) { assert.equal(key, 'sidebar.workspaces'); return callback() },
-    entriesOfSlot(key) { assert.equal(key, 'sidebar.workspaces'); return candidate ? [candidate] : [] },
-    subscribe(key, callback) { assert.equal(key, 'sidebar.workspaces'); subscribed = callback; return () => { unsubscribed++ } },
-    register(options, component) { registrations.push({ options, component }); return () => {} },
+    spec(key) { return key === 'sidebar.workspaces' && declared ? { kind: 'single', scope: 'root' } : undefined },
+    entries(key) { return [...(key === 'sidebar.workspaces' && declared ? [candidate, ...shadows].filter(Boolean) : []), ...active.filter(item => item.name === key).map(item => item.entry)].sort((a, b) => (canonical(a).options.priority ?? 0) - (canonical(b).options.priority ?? 0)) },
+    entriesOfSlot(key) { return slots.entries(key).slice(0, 1) },
+    getVersion(key) { return versions.get(key) ?? 0 },
+    subscribe(key, callback) {
+      if (!listeners.has(key)) listeners.set(key, new Set())
+      listeners.get(key).add(callback)
+      if (key === 'sidebar.workspaces') subscribed = callback
+      return () => { listeners.get(key).delete(callback); unsubscribed++ }
+    },
+    register(options, component) {
+      assert.equal(inactive, false, 'INACTIVE_EFFECT: cannot create an effect during Cordis unload')
+      if (options.name === 'sidebar.workspaces') {
+        assert.ok(declared, 'cannot register into a collapsed declaration')
+        assert.ok(!slots.entries(options.name).some(value => (canonical(value).options.priority ?? 0) === (options.priority ?? 0)), 'single slots reject duplicate priorities')
+      }
+      const registration = { options, component, winner: slots.entriesOfSlot('sidebar.workspaces')[0] }
+      const item = { name: options.name, entry: { options, component } }
+      registrations.push(registration)
+      active.push(item)
+      mutate(options.name)
+      assert.equal(slots.entriesOfSlot('sidebar.workspaces')[0], registration.winner, 'invalidation must not replace the workspace owner')
+      let disposed = false
+      const dispose = () => { if (disposed) return; disposed = true; active.splice(active.indexOf(item), 1); mutate(options.name) }
+      disposers.push(dispose)
+      return dispose
+    },
   }
-  return { entry, Original, slots, registrations, get unsubscribed() { return unsubscribed }, change(next) { candidate = next; subscribed() }, reconcile() { subscribed() } }
+  return { entry, Original, slots, registrations, mutations, active, get unsubscribed() { return unsubscribed }, change(next) { candidate = next; mutate('sidebar.workspaces') }, collapse() { declared = false; candidate = null; mutate('sidebar.workspaces') }, deactivate({ disposeEffectsFirst = false } = {}) { inactive = true; if (disposeEffectsFirst) for (const dispose of disposers) dispose() }, reconcile() { subscribed() } }
 }
-test('bridge wraps native entry preserving component descriptor children and store', () => { const h = harness(); const f = bridgeFixture(h); const before = Object.getOwnPropertyDescriptor(f.entry, 'component'); const children = f.entry.children, store = f.entry.store; const cleanup = h.api.installNativeRowBridge({ slots: f.slots }); const after = Object.getOwnPropertyDescriptor(f.entry, 'component'); assert.notEqual(after.value, before.value); for (const key of ['writable', 'enumerable', 'configurable']) assert.equal(after[key], before[key]); assert.equal(f.entry.children, children); assert.equal(f.entry.store, store); assert.equal(f.registrations.length, 1); assert.equal(f.registrations[0].options.name, 'sidebar.footer.action'); assert.equal('children' in f.registrations[0].options, false); cleanup(); assert.deepEqual(Object.getOwnPropertyDescriptor(f.entry, 'component'), before); assert.equal(f.unsubscribed, 1) })
+test('bridge wraps native entry preserving component descriptor children and store', () => { const h = harness(); const f = bridgeFixture(h); const before = Object.getOwnPropertyDescriptor(f.entry, 'component'); const children = f.entry.children, store = f.entry.store; const cleanup = h.api.installNativeRowBridge({ slots: f.slots }); const after = Object.getOwnPropertyDescriptor(f.entry, 'component'); assert.notEqual(after.value, before.value); for (const key of ['writable', 'enumerable', 'configurable']) assert.equal(after[key], before[key]); assert.equal(f.entry.children, children); assert.equal(f.entry.store, store); assert.equal(f.registrations.length, 1); assert.equal(f.registrations[0].options.name, 'sidebar.workspaces'); assert.equal('children' in f.registrations[0].options, false); assert.equal('store' in f.registrations[0].options, false); cleanup(); assert.deepEqual(Object.getOwnPropertyDescriptor(f.entry, 'component'), before); assert.equal(f.unsubscribed, 1) })
 test('bridge resolves canonical entry behind Cordis proxy', () => { const h = harness(); const f = bridgeFixture(h, { canonicalProxy: true }); const cleanup = h.api.installNativeRowBridge({ slots: f.slots }); assert.equal(f.entry.component.displayName, 'WorkspaceWithPinnedRows'); cleanup(); assert.equal(f.entry.component, f.Original) })
 test('bridge wrapper forwards exact props and publishes authorized renderer only on commit', () => { const h = harness(); const f = bridgeFixture(h); const cleanup = h.api.installNativeRowBridge({ slots: f.slots }); const props = { renderSlot() {}, t, requestSessionRename() {}, wide: true }; const element = h.render(f.entry.component, props); assert.equal(element.type, f.Original); assert.equal(element.props.renderSlot, props.renderSlot); assert.equal(element.props.wide, true); assert.equal(h.api.nativeRowBridge.getSnapshot(), null); const release = h.effects.shift()(); assert.equal(h.api.nativeRowBridge.getSnapshot().renderSlot, props.renderSlot); assert.equal(h.api.nativeRowBridge.getSnapshot().requestSessionRename, props.requestSessionRename); release(); assert.equal(h.api.nativeRowBridge.getSnapshot(), null); cleanup() })
 test('bridge reconcile does not double-wrap same entry', () => { const h = harness(); const f = bridgeFixture(h); const cleanup = h.api.installNativeRowBridge({ slots: f.slots }); const wrapper = f.entry.component; f.reconcile(); assert.equal(f.entry.component, wrapper); assert.equal(f.registrations.length, 1); cleanup() })
-test('replaced native entry restores old descriptor and wraps new entry', () => { const h = harness(); const f = bridgeFixture(h); const next = bridgeFixture(h); const cleanup = h.api.installNativeRowBridge({ slots: f.slots }); f.change(next.entry); assert.equal(f.entry.component, f.Original); assert.notEqual(next.entry.component, next.Original); cleanup(); assert.equal(next.entry.component, next.Original) })
+test('replaced native entry restores old descriptor and wraps new entry', async () => { const h = harness(); const f = bridgeFixture(h); const next = bridgeFixture(h); const cleanup = h.api.installNativeRowBridge({ slots: f.slots }); f.change(next.entry); await Promise.resolve(); assert.equal(f.entry.component, f.Original); assert.notEqual(next.entry.component, next.Original); cleanup(); assert.equal(next.entry.component, next.Original) })
 test('bridge unload never overwrites another plugin replacement', () => { const h = harness(); const f = bridgeFixture(h); const cleanup = h.api.installNativeRowBridge({ slots: f.slots }); function Replacement() {} f.entry.component = Replacement; cleanup(); assert.equal(f.entry.component, Replacement) })
 test('bridge refuses fixed component descriptor without mutation', () => { const h = harness(); const f = bridgeFixture(h, { descriptor: { writable: false, configurable: false } }); const cleanup = h.api.installNativeRowBridge({ slots: f.slots }); assert.equal(f.entry.component, f.Original); assert.equal(h.warnings.length, 1); cleanup() })
 test('bridge release cannot clear a newer occurrence and subscribers dispose', () => { const h = harness(); const a = {}, b = {}; let notifications = 0; const unsubscribe = h.api.nativeRowBridge.subscribe(() => notifications++); h.api.nativeRowBridge.publish(a); h.api.nativeRowBridge.publish(a); h.api.nativeRowBridge.publish(b); h.api.nativeRowBridge.release(a); assert.equal(h.api.nativeRowBridge.getSnapshot(), b); assert.equal(notifications, 2); h.api.nativeRowBridge.release(b); assert.equal(h.api.nativeRowBridge.getSnapshot(), null); assert.equal(notifications, 3); unsubscribe(); h.api.nativeRowBridge.publish(a); assert.equal(notifications, 3) })
 test('bridge cleanup clears published state and ignores later callbacks', () => { const h = harness(); const f = bridgeFixture(h); const cleanup = h.api.installNativeRowBridge({ slots: f.slots }); h.api.nativeRowBridge.publish({ renderSlot() {} }); cleanup(); assert.equal(h.api.nativeRowBridge.getSnapshot(), null); f.reconcile(); assert.equal(f.entry.component, f.Original) })
+
+test('bridge invalidates the mounted workspace outlet, not unrelated footer subscribers', async () => {
+  const h = harness(), f = bridgeFixture(h)
+  let rendered = f.entry.component, version = f.slots.getVersion('sidebar.workspaces'), workspaceUpdates = 0, footerUpdates = 0
+  const unsubscribe = f.slots.subscribe('sidebar.workspaces', () => {
+    const nextVersion = f.slots.getVersion('sidebar.workspaces')
+    if (nextVersion === version) return
+    version = nextVersion
+    rendered = f.slots.entriesOfSlot('sidebar.workspaces')[0]?.component
+    workspaceUpdates++
+  })
+  const unsubscribeFooter = f.slots.subscribe('sidebar.footer.action', () => footerUpdates++)
+  const cleanup = h.api.installNativeRowBridge({ slots: f.slots })
+  const wrapper = f.entry.component
+  assert.equal(rendered, f.Original, 'already mounted outlet waits for its keyed notification')
+  await Promise.resolve()
+  assert.equal(rendered, wrapper, 'workspace version must expose the new wrapper')
+  assert.equal(workspaceUpdates, 1)
+  assert.equal(footerUpdates, 0)
+  assert.equal(f.slots.getVersion('sidebar.workspaces'), 1, 'registration must mutate the workspace key')
+  assert.deepEqual(f.mutations, ['sidebar.workspaces'])
+  cleanup()
+  unsubscribe()
+  unsubscribeFooter()
+})
+
+test('bridge unload refreshes the mounted workspace outlet with the exact original descriptor', async () => {
+  const h = harness(), f = bridgeFixture(h)
+  const descriptor = Object.getOwnPropertyDescriptor(f.entry, 'component')
+  let rendered = f.Original, updates = 0
+  const unsubscribe = f.slots.subscribe('sidebar.workspaces', () => { rendered = f.slots.entriesOfSlot('sidebar.workspaces')[0]?.component; updates++ })
+  const cleanup = h.api.installNativeRowBridge({ slots: f.slots })
+  await Promise.resolve()
+  assert.notEqual(rendered, f.Original)
+  f.deactivate()
+  assert.doesNotThrow(cleanup, 'unload must not create a new slot effect')
+  assert.deepEqual(Object.getOwnPropertyDescriptor(f.entry, 'component'), descriptor)
+  await Promise.resolve()
+  assert.equal(rendered, f.Original, 'unload must invalidate workspace outlet after restoring component')
+  assert.equal(updates, 2)
+  assert.equal(f.slots.getVersion('sidebar.workspaces'), 2)
+  assert.equal(f.registrations.length, 1)
+  assert.equal(f.active.length, 0)
+  unsubscribe()
+})
+
+test('workspace invalidation stays behind every occupied priority without copying native ownership', () => {
+  const h = harness(), shadow = { component() {}, options: { priority: 10000 } }
+  const f = bridgeFixture(h, { priority: -5, shadows: [shadow] })
+  const cleanup = h.api.installNativeRowBridge({ slots: f.slots })
+  assert.deepEqual(plain(f.registrations[0].options), { name: 'sidebar.workspaces', priority: 10001 })
+  assert.equal(f.registrations[0].winner, f.entry)
+  assert.equal(f.entry.children.native, true)
+  assert.equal(f.entry.store.identity, 'native-store')
+  cleanup()
+  assert.equal(f.active.length, 0)
+})
+
+test('bridge suppresses synchronous notification reentry and releases its invalidation registration', () => {
+  const h = harness(), f = bridgeFixture(h, { synchronous: true })
+  const entriesOfSlot = f.slots.entriesOfSlot
+  let reads = 0
+  f.slots.entriesOfSlot = key => { reads++; return entriesOfSlot(key) }
+  const cleanup = h.api.installNativeRowBridge({ slots: f.slots })
+  assert.equal(reads, 3, 'one bridge lookup plus notifier winner checks; reentrant reconciliation must return before lookup')
+  assert.equal(f.registrations.length, 1)
+  assert.equal(f.active.length, 1)
+  assert.equal(h.warnings.length, 0)
+  f.deactivate()
+  cleanup()
+  assert.equal(f.entry.component, f.Original)
+  assert.equal(f.active.length, 0)
+})
+
+test('batched workspace notifications reach a fixed point without wrapping or notifying recursively', async () => {
+  const h = harness(), f = bridgeFixture(h)
+  const cleanup = h.api.installNativeRowBridge({ slots: f.slots })
+  const wrapper = f.entry.component
+  await Promise.resolve()
+  await Promise.resolve()
+  assert.equal(f.entry.component, wrapper)
+  assert.equal(f.registrations.length, 1)
+  assert.equal(f.slots.getVersion('sidebar.workspaces'), 1)
+  cleanup()
+  await Promise.resolve()
+  assert.equal(f.entry.component, f.Original)
+  assert.equal(f.registrations.length, 1, 'queued callbacks after unsubscribe must not rewrap')
+  assert.equal(f.slots.getVersion('sidebar.workspaces'), 2)
+})
+
+test('native effect disposal before bridge cleanup still refreshes the restored workspace', async () => {
+  const h = harness(), f = bridgeFixture(h)
+  let rendered = f.Original
+  const unsubscribe = f.slots.subscribe('sidebar.workspaces', () => { rendered = f.slots.entriesOfSlot('sidebar.workspaces')[0]?.component })
+  const cleanup = h.api.installNativeRowBridge({ slots: f.slots })
+  await Promise.resolve()
+  assert.notEqual(rendered, f.Original)
+  f.deactivate({ disposeEffectsFirst: true })
+  assert.doesNotThrow(cleanup)
+  await Promise.resolve()
+  assert.equal(rendered, f.Original)
+  assert.equal(f.registrations.length, 1)
+  assert.equal(f.active.length, 0)
+  unsubscribe()
+})
+
+test('collapsed workspace declaration restores safely without trying an unsupported registration', async () => {
+  const h = harness(), f = bridgeFixture(h)
+  const cleanup = h.api.installNativeRowBridge({ slots: f.slots })
+  f.collapse()
+  assert.doesNotThrow(cleanup)
+  await Promise.resolve()
+  assert.equal(f.entry.component, f.Original)
+  assert.equal(f.registrations.length, 1)
+  assert.equal(f.active.length, 0)
+})

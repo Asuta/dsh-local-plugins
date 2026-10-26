@@ -117,10 +117,17 @@ window.__ModuleLoader__.load({
       const original = Symbol.for('cordis.original')
       const owned = Symbol.for('sidebar-more.workspace-row-bridge')
       return slots.inject('sidebar.workspaces', () => {
-        let patch = null, changing = false, stopped = false
+        let patch = null, changing = false, stopped = false, invalidate = null
         const notify = () => {
-          const dispose = slots.register({ name: 'sidebar.footer.action', id: 'sidebar-more.invalidate', order: 10000 }, () => null)
-          dispose()
+          invalidate?.()
+          invalidate = null
+          // Outlets observe only their slot's version. Keep a shadow behind all
+          // existing priorities (lowest wins), without children/store ownership.
+          // Its disposer also invalidates restore without creating an effect on
+          // an already-inactive Cordis context during plugin unload.
+          if (!slots.spec('sidebar.workspaces')) return
+          const priority = Math.max(0, ...slots.entries('sidebar.workspaces').map(candidate => (candidate?.[original] ?? candidate).options.priority ?? 0)) + 1
+          invalidate = slots.register({ name: 'sidebar.workspaces', priority }, () => null)
         }
         const restore = () => {
           if (!patch) return
@@ -163,7 +170,7 @@ window.__ModuleLoader__.load({
           unsubscribe()
           nativeRowBridge.publish(null)
           changing = true
-          try { restore(); notify() } finally { changing = false }
+          try { restore() } finally { invalidate?.(); invalidate = null; changing = false }
         }
       })
     }

@@ -4,18 +4,24 @@ import os from 'node:os'
 import { createHash, randomUUID } from 'node:crypto'
 
 export const MAX_INSTRUCTION_BYTES = 128 * 1024
+// Match the native instruction loader without relaxing editor/write protections.
+export const MAX_RUNTIME_INSTRUCTION_BYTES = 1024 * 1024
 export const digest = text => createHash('sha256').update(text).digest('hex')
 export const fault = (code, message) => Object.assign(new Error(message), { code })
 export function homePath(env = process.env) {
   const value = env.DSH_HOME?.trim() || path.join(os.homedir(), '.dsh')
   return path.resolve(value === '~' ? os.homedir() : /^[~][\\/]/.test(value) ? path.join(os.homedir(), value.slice(2)) : value)
 }
-async function readText(file, optional = false) {
+async function readText(file, optional = false, { runtime = false } = {}) {
+  const limit = runtime ? MAX_RUNTIME_INSTRUCTION_BYTES : MAX_INSTRUCTION_BYTES
   try {
-    const stat = await fs.lstat(file)
-    if (stat.isSymbolicLink() || !stat.isFile()) throw fault('INVALID_FILE', 'The settings target must be a regular file, not a symbolic link')
-    if (stat.size > MAX_INSTRUCTION_BYTES) throw fault('TOO_LARGE', 'File exceeds the 128 KiB editor limit')
-    return { exists: true, text: await fs.readFile(file, 'utf8') }
+    const stat = runtime ? await fs.stat(file) : await fs.lstat(file)
+    if (!stat.isFile() || (!runtime && stat.isSymbolicLink())) throw fault('INVALID_FILE', 'The settings target must be a regular file' + (runtime ? '' : ', not a symbolic link'))
+    const tooLarge = () => fault('TOO_LARGE', runtime ? 'File exceeds the 1 MiB runtime instruction limit' : 'File exceeds the 128 KiB editor limit')
+    if (stat.size > limit) throw tooLarge()
+    const content = await fs.readFile(file)
+    if (content.length > limit) throw tooLarge()
+    return { exists: true, text: content.toString('utf8') }
   } catch (error) { if (optional && error.code === 'ENOENT') return { exists: false, text: '' }; throw error }
 }
 async function atomicWrite(file, text) {
@@ -40,9 +46,9 @@ export function createSettingsCore({ home = homePath(), llm, adapter } = {}) {
     if (!value || typeof value !== 'object' || typeof value.provider !== 'string' || typeof value.model !== 'string' || !value.provider.trim() || !value.model.trim() || value.provider.length > 256 || value.model.length > 512) throw fault('BAD_SELECTION', 'Choose a provider and model, or follow the conversation model')
     return { provider: value.provider.trim(), model: value.model.trim() }
   }
-  async function instructions() {
-    const content = await readText(instructionFile, true)
-    return { path: instructionFile, ...content, revision: digest((content.exists ? 'present:' : 'missing:') + content.text), maxBytes: MAX_INSTRUCTION_BYTES }
+  async function instructions({ runtime = false } = {}) {
+    const content = await readText(instructionFile, true, { runtime })
+    return { path: instructionFile, ...content, revision: digest((content.exists ? 'present:' : 'missing:') + content.text), maxBytes: runtime ? MAX_RUNTIME_INSTRUCTION_BYTES : MAX_INSTRUCTION_BYTES }
   }
   async function saveInstructions({ text, revision }) {
     return serial(async () => {
