@@ -10,7 +10,6 @@
 | --- | --- | --- |
 | [sidebar-pomodoro](./sidebar-pomodoro) | 侧栏番茄钟：底部按钮 + 全页专注计时，专注 / 短休息 / 长休息自动轮换，localStorage 续跑 | `sidebar.footer.action`、`shell.overlay` |
 | [sidebar-clock](./sidebar-clock) | 侧栏时钟：底部按钮 + 全页时钟（模拟表盘、数字时间、日期、本地时区） | `sidebar.footer.action`、`shell.overlay` |
-| [sidebar-more](./sidebar-more) | 侧栏精简：只保留插件市场与「更多」，把插件与自动化任务收进「更多」，含置顶会话处理 | `sidebar.footer.action`、`sidebar.panellist.actions` |
 | [hide-new-session](./hide-new-session) | 隐藏侧栏顶部的「新会话」按钮（纯 CSS 注入，不占用 slot） | — |
 | [archived-sessions](./archived-sessions) | 归档会话管理：在设置页里列出、恢复、永久删除已归档会话 | `settings.section` |
 | [session-mover](./session-mover) | 跨工作区拖拽空闲对话，支持已加载会话、待发队列保留、撤销和失败回滚；同步修改工作目录 | `shell.overlay` + Host 搬移服务 |
