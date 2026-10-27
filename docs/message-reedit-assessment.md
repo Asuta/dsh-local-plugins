@@ -1,6 +1,6 @@
 # Message re-edit: safety and feasibility assessment
 
-As of 2026-10-26. Target runtime: `D:\SoftWare\dsh\resources\app.asar\dsh` (`@deepseek-ai/dsh-session-persistence-jsonl` manifest version `0.2.1-rc.3`).
+As of 2026-10-26. Target runtime: `resources/app.asar/dsh` under the DSH Desktop installation (`@deepseek-ai/dsh-session-persistence-jsonl` manifest version `0.2.1-rc.3`).
 
 ## Outcome
 
