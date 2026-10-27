@@ -10,3 +10,9 @@ dist/
 *.log
 .DS_Store
 Thumbs.db
+
+# 开发临时区与测试残留，不进版本库
+/.dsh-scratch/
+/.user-agent-settings/fixtures/
+/.session-mover/*
+!/.session-mover/test-placement.mjs

@@ -86,12 +86,13 @@ node scripts/asar.mjs read dsh/node_modules/<包>/lib/index.js   # 读整个文�
 profile 上会报 `ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY`，而 DSH 正跑着。
 这时做最小手工对齐，不要为了跑通 install 把整个 `node_modules` 清掉。
 
-**只有两个插件有构建步骤。** `side-chat`（esbuild，`src/` → `client.js`）和
-`desktop-navigation`（`build.mjs`）。其余插件的 `client.js` 就是手写源码。
-改了 `src/` 不重新 build 等于没改。
+**只有一个插件有构建步骤。** `desktop-navigation` 的 `build.mjs`。其余插件的
+`client.js` 就是手写源码，直接改。以后再加带 `src/` 的插件，构建产物要与源码
+一起提交。
 
-**测试在点开头目录。** 例如 `node --test .side-chat\host.test.mjs`。它们用桩，
-不证明真机上的视觉效果。
+**测试在点开头目录。** 例如 `node --test .desktop-navigation\navigation.test.mjs`。
+它们用桩，不证明真机上的视觉效果。连着真实 DSH、会改真实会话的脚本不要进版本库
+（`.session-mover` 下那四个 live 脚本已按此排除）。
 
 **提交信息用中文**，按仓库根目录的 AGENTS.md。
 
