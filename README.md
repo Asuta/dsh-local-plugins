@@ -52,7 +52,7 @@ DSH 目前没有针对本地目录的一键安装，实际做法是让 profile �
 ```json
 {
   "dependencies": {
-    "@local/sidebar-clock": "link:D:/Project/PlayGround/sidebar-clock"
+    "@local/sidebar-clock": "link:<本仓库绝对路径>/sidebar-clock"
   },
   "dsh": {
     "profile": {

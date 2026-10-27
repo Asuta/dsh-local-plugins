@@ -12,15 +12,15 @@ bundle。仓库级 Codex skill 在 `.agents/skills/`，改插件前先读
 ## 常用命令
 
 - 语法检查：`node --check <改过的 client.js>`
-- 单元测试：`node --test .sidebar-more\pinned.test.mjs`，测试都在点开头的目录里
-- 构建：`node desktop-navigation\build.mjs`（目前唯一有构建步骤的插件）
+- 单元测试：`node --test .sidebar-more/pinned.test.mjs`，测试都在点开头的目录里
+- 构建：`node desktop-navigation/build.mjs`（目前唯一有构建步骤的插件）
 
 ## 验证方式
 
 UI 验证走独立的 Web 实例，不在桌面窗口里点：
 
-- 起实例：`dsh --profile <测试profile> --port 3098 --no-open`，把打印出来的带 token
-  的地址开在应用内浏览器，用选择器点、读 DOM、截图。
+- 起实例：`dsh --profile <测试profile> --port <空闲端口> --no-open`，把打印出来的
+  带 token 的地址开在应用内浏览器，用选择器点、读 DOM、截图。
 - 不要连正在用的桌面实例：它的端口每次不同，且需要它自己的 token，直接请求返回 401。
 - 不要复用 `web` profile：它装的第三方插件在 0.2.1-rc.3 上会被跳过。新建一个只含
   `@deepseek-ai/dsh-base`、`@deepseek-ai/dsh-web-app` 和待测 `@local/*` 的 profile。
@@ -31,8 +31,9 @@ UI 验证走独立的 Web 实例，不在桌面窗口里点：
   `remote.session.openWorkspacePath`。
 - 确认桌面窗口里的真实观感。
 
-测试若要动会话或工作区，把 `.credentials.yaml` 和 settings 复制到临时 `DSH_HOME`
-再启动，避免改到真实会话——profile 是独立的，`sessions/` 和 `storages/` 是共享的。
+测试若要动会话或工作区，把 `$DSH_HOME` 下的 `.credentials.yaml` 与 settings 复制到
+临时 `DSH_HOME` 再启动，避免改到真实会话——profile 是独立的，`sessions/` 和
+`storages/` 是共享的。
 
 ## 坑点
 

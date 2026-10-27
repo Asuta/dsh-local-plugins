@@ -1,6 +1,13 @@
 // Disposable test fixture. Only the backed-up pilot can be operated on.
 import { createHash, randomUUID } from 'node:crypto'
+import path from 'node:path'
 import { pathToFileURL } from 'node:url'
+
+// The Host runs inside Electron, so resourcesPath points at the installation's
+// resources directory. Override with DSH_LLM_PATH when running elsewhere.
+const LLM_ENTRY = process.env.DSH_LLM_PATH ?? (process.resourcesPath
+  ? path.join(process.resourcesPath, 'app.asar', 'dsh', 'node_modules', '@deepseek-ai', 'dsh-llm', 'lib', 'index.js')
+  : undefined)
 const ID = 'session-7ff31c6b-7ccd-41bf-80d4-9898709ce6cd'
 const RAW = Symbol.for('cordis.original')
 const raw = v => v?.[RAW] ?? v
@@ -30,7 +37,8 @@ export function installVerification(ctx) {
           const found = await controller.resolveAgent(ID)
           if (found.error) throw Error(found.error.message)
           if (body.action === 'seed') {
-            const { createUserMessage, createDeveloperMessage } = await import(pathToFileURL('D:/SoftWare/dsh/resources/app.asar/dsh/node_modules/@deepseek-ai/dsh-llm/lib/index.js').href)
+            if (!LLM_ENTRY) throw Error('set DSH_LLM_PATH to the dsh-llm lib/index.js entry point')
+            const { createUserMessage, createDeveloperMessage } = await import(pathToFileURL(LLM_ENTRY).href)
             found.agent.session.append('user/message', createUserMessage({ content: [{ type: 'text', text: 'Session mover history preservation fixture' }], source: { kind: 'user' } }), { surfaceOp: 'append' })
             found.agent.inject(createUserMessage({ content: [{ type: 'text', text: 'Session mover pending input fixture; do not execute' }], source: { kind: 'user' } }))
           }

@@ -11,7 +11,7 @@ profile 目录在 `~/.dsh/profiles/<名字>`，本机是 `desktop`。目录里�
 
 1. 读插件 `package.json` 的 `name`，后面两处都要用这个字符串，不能改写成
    目录名。
-2. 在 `dependencies` 加 `"@local/x": "link:D:/Project/PlayGround/x"`。
+2. 在 `dependencies` 加 `"@local/x": "link:<本仓库绝对路径>/x"`。
 3. 在 `dsh.profile.bundles` 数组加同名项。
 4. 在 profile 目录跑 `pnpm install`。
 5. 验证：`node_modules/@local/x` 是能解析的 junction；重启 DSH；Plugin Manager

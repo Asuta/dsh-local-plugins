@@ -36,9 +36,10 @@ description: Use when working on the DSH plugin bundles in this repo under Codex
 | `Slots.listSubTree` | `grep "ctx.slots.register"` 或具体 slot 名，能拿到真实 slot 名、id 和注册参数 |
 | `Theme` token | `grep "--dsw-alias-"` 看宿主实际定义的变量 |
 
-DSH 装在 `D:\SoftWare\dsh`，宿主和它自带的包都在 `resources\app.asar` 里。文件读取、
+DSH 桌面版的宿主和它自带的包都在安装目录的 `resources/app.asar` 里。文件读取、
 `cat`/`ls`、ripgrep 的目录遍历、`require` 和 pnpm 都打不开这个包，所以用本 skill
-目录下的 `scripts/asar.mjs` 直接解析归档头：
+目录下的 `scripts/asar.mjs` 直接解析归档头。脚本会顺着 `dsh` 命令所在的 PATH
+往上找，也认 `DSH_ASAR` 和 `--asar`：
 
 ```
 node scripts/asar.mjs ls  dsh/node_modules/@deepseek-ai        # 列包

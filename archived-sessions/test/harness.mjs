@@ -3,9 +3,9 @@ import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
-const PLUGIN = 'D:/Project/PlayGround/archived-sessions'
+const PLUGIN = fileURLToPath(new URL('..', import.meta.url)).replace(/[\\/]$/, '')
 const results = []
 const record = (name, ok, detail) => {
   results.push({ name, ok, detail })

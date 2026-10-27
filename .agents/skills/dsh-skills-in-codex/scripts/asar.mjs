@@ -10,16 +10,51 @@
  *   node asar.mjs read <path-inside-archive>
  *   node asar.mjs grep <regex> [--max <hits>] [--context <chars>]
  *
- * The archive defaults to the installed DSH app; override with --asar <file> or
- * the DSH_ASAR environment variable.
+ * The archive is located from --asar, then DSH_ASAR, then the usual install
+ * locations for the platform. Pass --asar <file> when yours is elsewhere.
  */
 import fs from 'node:fs'
 import path from 'node:path'
 
-const DEFAULT_ASAR = 'D:/SoftWare/dsh/resources/app.asar'
+function fromPath() {
+  const names = process.platform === 'win32' ? ['dsh.cmd', 'dsh.exe', 'dsh.ps1'] : ['dsh']
+  for (const dir of (process.env.PATH || '').split(path.delimiter)) {
+    for (const name of names) {
+      if (!fs.existsSync(path.join(dir, name))) continue
+      let current = dir
+      for (let depth = 0; depth < 6; depth++) {
+        const asar = path.join(current, 'resources', 'app.asar')
+        if (fs.existsSync(asar)) return asar
+        current = path.dirname(current)
+      }
+    }
+  }
+}
+
+function installCandidates() {
+  const list = [process.env.DSH_ASAR, fromPath()].filter(Boolean)
+  if (process.platform === 'win32') {
+    if (process.env.LOCALAPPDATA) list.push(path.join(process.env.LOCALAPPDATA, 'Programs', 'DeepSeek Harness', 'resources', 'app.asar'))
+    if (process.env.ProgramFiles) list.push(path.join(process.env.ProgramFiles, 'DeepSeek Harness', 'resources', 'app.asar'))
+  } else if (process.platform === 'darwin') {
+    list.push('/Applications/DeepSeek Harness.app/Contents/Resources/app.asar')
+  } else {
+    list.push('/opt/DeepSeek Harness/resources/app.asar', '/usr/lib/deepseek-harness/resources/app.asar')
+  }
+  return list
+}
+
+function resolveAsar(explicit) {
+  const found = [...(explicit ? [explicit] : []), ...installCandidates()].find(file => fs.existsSync(file))
+  if (!found) {
+    process.stderr.write('找不到 app.asar：用 --asar <路径> 指定，或设置 DSH_ASAR\n')
+    process.exit(2)
+  }
+  return found
+}
 
 function parseArgs(argv) {
-  const args = { _: [], max: 5, context: 400, asar: process.env.DSH_ASAR || DEFAULT_ASAR }
+  const args = { _: [], max: 5, context: 400, asar: undefined }
   for (let i = 0; i < argv.length; i++) {
     const token = argv[i]
     if (token === '--max' || token === '--context' || token === '--asar') {
@@ -76,7 +111,8 @@ if (!command || !argument) {
   process.exit(2)
 }
 
-const archive = openArchive(args.asar)
+const asarPath = resolveAsar(args.asar)
+const archive = openArchive(asarPath)
 
 if (command === 'ls') {
   const entries = walk(archive.header, '', []).filter((e) => e.path.startsWith(argument))
@@ -90,7 +126,7 @@ if (command === 'ls') {
   }
   if (!Buffer.isBuffer(buf)) {
     process.stderr.write('stored outside the archive; read it from ' +
-      path.join(path.dirname(args.asar), 'app.asar.unpacked', argument) + '\n')
+      path.join(path.dirname(asarPath), 'app.asar.unpacked', argument) + '\n')
     process.exit(1)
   }
   process.stdout.write(buf)
