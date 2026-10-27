@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Sidebar Compaction",
+    "description": "Keeps only Plugin Market and More in the sidebar, and moves Plugins and Automation tasks into the More menu."
+  }
+}

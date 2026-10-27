@@ -15,6 +15,7 @@
 | [hide-new-session](./hide-new-session) | `@local/hide-new-session` 1.0.0 | 隐藏侧栏顶部的「新会话」按钮（纯 CSS 注入，不占用 slot） | — |
 | [session-mover](./session-mover) | `@local/session-mover` 0.3.0 | 跨工作区拖拽空闲对话，保留历史与待发消息，支持精确落位、原位撤销和失败回滚 | `shell.overlay` + Host 搬移服务 |
 | [sidebar-clock](./sidebar-clock) | `@local/sidebar-clock` 1.0.0 | 侧栏时钟：底部按钮 + 全页时钟（模拟表盘、数字时间、日期、本地时区） | `sidebar.footer.action`、`shell.overlay` |
+| [sidebar-more](./sidebar-more) | `@local/sidebar-more` 1.0.1 | 侧栏精简：只保留插件市场与「更多」，并把置顶会话收拢成「工作区」上方的独立分区 | `sidebar.footer.action`、`sidebar.panellist.actions`、`sidebar.workspaces` |
 | [user-agent-settings](./user-agent-settings) | `@local/user-agent-settings` 1.0.3 | 编辑全局 `AGENTS.md`、选择压缩模型、从设置页刷新前端 | `settings.section` |
 
 `desktop-navigation` 的目录名和包名不一致，安装时以 `package.json` 的 `name` 为准。
@@ -78,6 +79,7 @@ DSH 目前没有针对本地目录的一键安装，实际做法是让 profile �
 开发和验证环境是 **DSH 0.2.1-rc.3**（Web surface）。插件依赖 `@deepseek-ai/dsh-client-*` 的 slot 与 Builtin 约定，其中几个还挂在私有接缝上：
 
 - `desktop-navigation` 改动 Chat StoredEntry 的可写组件属性；
+- `sidebar-more` 借用 workspace 分组注册的 `renderSlot`，并镜像 `SessionNodeItem` 的行结构；
 - `user-agent-settings` 包装原生 `BasicCompactionEngine.summarize`；
 - `session-mover` 依赖会话日志头与工作区实体的搬移方法。
 

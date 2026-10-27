@@ -71,9 +71,10 @@ node scripts/asar.mjs read dsh/node_modules/<包>/lib/index.js   # 读整个文�
 ## 本仓库的坑
 
 **版本耦合。** 插件挂在 DSH 私有接缝上：`desktop-navigation` 改 Chat StoredEntry
-的可写组件属性，`user-agent-settings` 包装 `BasicCompactionEngine.summarize`，
-`session-mover` 依赖会话日志头和 `attachSession` 的形状。全部按 DSH 0.2.1-rc.3
-验过，升大版本后每一项都要重新确认。
+的可写组件属性，`sidebar-more` 借用 workspace 分组注册的 `renderSlot` 并镜像
+`SessionNodeItem` 的行结构，`user-agent-settings` 包装
+`BasicCompactionEngine.summarize`，`session-mover` 依赖会话日志头和
+`attachSession` 的形状。全部按 DSH 0.2.1-rc.3 验过，升大版本后每一项都要重新确认。
 
 **README 会漂。** 根目录 README 已经滞后：列着已删除的 `sidebar-pomodoro`，漏了
 几个现存插件，`session-mover` 版本号也不对。以各目录的 `package.json` 为准。
